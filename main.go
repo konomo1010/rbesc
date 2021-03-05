@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	//"debug/macho"
 	"encoding/csv"
 	"fmt"
 	scp "github.com/bramvdbogaerde/go-scp"
+	termbox "github.com/nsf/termbox-go"
 	"golang.org/x/crypto/ssh"
+	"io/ioutil"
 	"log"
 	"os"
+	"time"
 
 	//"os"
 )
@@ -18,22 +22,40 @@ type Host struct {
 	user string
 	password string
 }
+
 var (
+	//shellScript string
+	//hostsConfig string
+
 	shellScript = "./config/command.sh"
 	hostsConfig = "./config/hosts_config.csv"
 
 	remoteSaveShellScriptPath = "/tmp/command.sh"
 )
+
+// 清屏
+func init() {
+	if err := termbox.Init(); err != nil {
+		panic(err)
+	}
+	termbox.SetCursor(0, 0)
+	termbox.HideCursor()
+}
+
+
 func main() {
 	fmt.Println("starting ... ... ...")
+	//fmt.Println("---> ",getExecutePath2())
+	//execPwd := getExecutePath2()
+	//shellScript = execPwd + "./config/command.sh"
+	//hostsConfig = execPwd + "./config/hosts_config.csv"
 	// 执行前目录文件检查
 	if judge,_ := PathExists(shellScript); !judge {
-		log.Fatalln("Eorror : 请检查当前目录下 config/command.sh 文件是否存在 ... ...")
+		log.Fatalf("Eorror : 请检查当前目录下 %s 文件是否存在 ... ...",shellScript)
 		os.Exit(100)
 	}
 
-
-	fmt.Println(os.Getwd())
+	//fmt.Println(os.Getwd())
 	file, err := os.Open(hostsConfig)
 	if err != nil {
 		log.Fatalln(err)
@@ -50,49 +72,58 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	fmt.Println(records)
+	BatchExec(records)
+	pause()  //最后请按任意键继续
+}
 
+func BatchExec(records [][]string) {
 	for i,v := range records {
 		if i != 0 {
 			host := HostSliceToStruct(v)
-			huixian := ShellScriptRemoteExec(host)
-			fmt.Println(huixian)
+			fmt.Printf("%s              ", host.ip )
+			if flag, err := ShellScriptRemoteExec(host); flag {
+				fmt.Printf("ok\n")
+			}else {
+				fmt.Printf("%s\n",err.Error())
+			}
+
 		}
 	}
 }
 
 
-func connectSSH(host Host) *ssh.Client {
+func ShellScriptRemoteExec(host Host) (bool, error) {
+	//timer := time.NewTimer(5 * time.Second)
+
 	// setup SSH connection
 	cfg := &ssh.ClientConfig{
 		User: host.user,
 		Auth: []ssh.AuthMethod{ssh.Password(host.password)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout: 5 * time.Second, // time.Duration
 	}
 
-	client, err := ssh.Dial("tcp", host.ip+":"+host.port, cfg)
+	sshClient, err := ssh.Dial("tcp", host.ip+":"+host.port, cfg)
+
 	if err != nil {
-		log.Fatalf("SSH dial error: %s", err.Error())
+		//log.Fatalf("SSH dial error: %s", err.Error())
+		//fmt.Printf("SSH dial error: %s", err.Error())
+		return false, err
 	}
 
-	return client
-}
-
-func ShellScriptRemoteExec(host Host) string {
-	sshClient := connectSSH(host)
 	client, err := scp.NewClientBySSH(sshClient)
 	if err != nil {
 		fmt.Println("Error creating new SSH session from existing connection", err)
 	};defer client.Close()
 
-
-
 	// scp 脚本
-	f, _ := os.Open(shellScript)
-	defer f.Close()
+	//f, _ := os.OpenFile(shellScript, os.O_RDONLY , 6)
+	buff, _ := ioutil.ReadFile(shellScript)
 
-
-	err = client.CopyFile(f, remoteSaveShellScriptPath, "0777")
+	//defer f.Close()
+	//fmt.Println(string(buff))
+	r := bytes.NewReader(buff)
+	err = client.CopyFile(r, remoteSaveShellScriptPath, "0777")
 	if err != nil {
 		fmt.Println("Error : 拷贝脚本失败 ... ...  ", err)
 	}
@@ -106,9 +137,11 @@ func ShellScriptRemoteExec(host Host) string {
 	var b bytes.Buffer
 	session.Stdout = &b
 	if err := session.Run(remoteSaveShellScriptPath); err != nil {
-		panic("Failed to run: " + err.Error())
+		//panic("Failed to run: " + err.Error())
+		return false, err
+
 	}
-	return b.String()
+	return true, nil
 }
 
 func HostSliceToStruct(sli []string) Host {
@@ -130,3 +163,18 @@ func PathExists(path string) (bool, error) {
 	}
 	return false, err
 }
+
+func pause() {
+	fmt.Println("请按任意键继续...")
+Loop:
+	for {
+		switch ev := termbox.PollEvent(); ev.Type {
+		case termbox.EventKey:
+			break Loop
+		}
+	}
+}
+
+
+
+
