@@ -1,3 +1,4 @@
 #!/usr/bin/env sh
 
-aaa
+ifconfig eth0
+w

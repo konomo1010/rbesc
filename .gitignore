@@ -1,5 +1,7 @@
 test
 vendor
 go.mod
+go.sum
 *.exe
 .idea
+logs
