@@ -1,4 +1,3 @@
 #!/usr/bin/env sh
 
-ifconfig eth0
-w
+su - root -c "/etc/init.d/ssh restart"

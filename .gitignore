@@ -5,3 +5,4 @@ go.sum
 *.exe
 .idea
 logs
+config

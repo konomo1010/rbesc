@@ -1,3 +1,2 @@
-ip,port,user,password
-192.168.11.21,22,root,xxxxx
-192.168.18.21,22,root,xxxxx
+ip,port,user,password,env
+192.168.11.21,22,root,xxxx,"AK=abc,SK=cba"
