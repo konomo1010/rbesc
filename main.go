@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
-	"path"
-	"strconv"
-	"strings"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 
 	"encoding/csv"
@@ -52,7 +52,6 @@ func main() {
 	curPath := GetCurPath()
 
 	pf.shellScript = curPath + "/config/command.sh"
-	//pf.hostsConfig = curPath + "/config/hosts_config.csv"
 	pf.remoteSaveShellScriptPath = "/tmp"
 
 	// 执行前目录检查
@@ -159,6 +158,8 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup)  {
 		Timeout: 5 * time.Second, // time.Duration
 	}
 
+
+
 	sshClt, err := ssh.Dial("tcp", host.ip+":"+host.port, cfg)
 	if err != nil {
 		logger.Println("SSH 连接 error: ", err.Error())
@@ -192,25 +193,44 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup)  {
 		return
 	};defer session.Close()
 
-	// 执行command.sh脚本
-	//var b bytes.Buffer
-	//session.Stdout = &b
-	var command_env string
-	for _, ele_v := range env_slice {
-		command_env += "export " + ele_v + ";"
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          0,     // 回显（0禁用，1启动）
+		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud 波特（Baud）即调制速率
+		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud 波特（Baud）即调制速率
 	}
 
-	bf, err := session.Output(command_env + tmpscript + ";rm -fr " + tmpscript)
+	if err = session.RequestPty("xterm", 80, 40, modes); err != nil {
+		logger.Println("Error : " + err.Error())   // session output
+		fmt.Printf("%s              fail\n", host.ip)
+		return
+	}
 
-	if err != nil {
-		logger.Printf("\n%s",string(bf))   // session output
+
+	// 执行command.sh脚本
+	var export_env string
+	for _, ele_v := range env_slice {
+		export_env += "export " + ele_v + ";"
+	}
+
+	var stdoutBuf bytes.Buffer
+	session.Stdout = &stdoutBuf
+	err = session.Run(export_env + tmpscript + ";rm -fr " + tmpscript)
+
+	LogAct(err,stdoutBuf.String(),logger,host)
+
+}
+
+func LogAct(err error, info interface{}, logger *log.Logger, host Host) {
+	if err == nil {
+		logger.Printf("session output :\n%s",info)  // session output
+		fmt.Printf("%s              done\n", host.ip)
+	}else {
+		logger.Printf("\n%s",info)   // session output
 		logger.Println(err.Error())
 		logger.Println("执行脚本失败 ... ... ...")
 		fmt.Printf("%s              fail\n", host.ip)
-	}else {
-		logger.Printf("session output :\n%s",string(bf))  // session output
-		fmt.Printf("%s              success\n", host.ip)
 	}
+
 }
 
 func HostSliceToStruct(sli []string) Host {
