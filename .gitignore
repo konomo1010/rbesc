@@ -6,3 +6,4 @@ go.sum
 .idea
 logs
 config
+go.sum
