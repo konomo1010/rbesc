@@ -1,0 +1,52 @@
+name: Build and Release
+
+# 触发条件：当推送标签（如 v1.0.0）时执行
+on:
+  push:
+    tags:
+      - 'v*'  # 匹配 v1.0.0、v2.1.1 等标签
+
+jobs:
+  build:
+    runs-on: ubuntu-latest  # 在 Ubuntu 环境运行
+
+    steps:
+      # 步骤1：拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 步骤2：配置 Go 环境
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'  # 指定 Go 版本
+
+      # 步骤3：编译不同平台的二进制文件
+      - name: Build binaries
+        run: |
+          # 创建输出目录
+          mkdir -p release
+          
+          # 编译 Linux 版本
+          GOOS=linux GOARCH=amd64 go build -o release/rbesc-amd64
+          
+          # 编译 Windows 版本
+          GOOS=windows GOARCH=amd64 go build -o release/rbesc-amd64.exe
+          
+          # 编译 macOS 版本
+          GOOS=darwin GOARCH=amd64 go build -o release/rbesc-amd64
+
+      # 步骤4：创建 Release 并上传文件
+      - name: Create and upload Release
+        uses: softprops/action-gh-release@v2  # 第三方 Release 工具
+        with:
+          # 上传 release 目录下的所有文件
+          files: |
+            release/rbesc-amd64
+            release/rbesc-amd64.exe
+            release/rbesc-amd64
+          # 自动生成 Release 描述（可选）
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 自动生成的令牌，用于权限验证
+
