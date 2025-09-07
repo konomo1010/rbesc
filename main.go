@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
+	"flag"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -11,7 +13,6 @@ import (
 	"strings"
 	"sync"
 
-	"encoding/csv"
 	"fmt"
 	scp "github.com/bramvdbogaerde/go-scp"
 	"golang.org/x/crypto/ssh"
@@ -46,81 +47,167 @@ func GetCurPath() string {
 }
 
 func main() {
-	fmt.Println("starting ... ... ...")
+	var (
+		dir_csv  string
+		file_csv string
+	)
+
+	// 绑定短参数和长参数到同一个变量
+	flag.StringVar(&dir_csv, "d", "", "指定 csv 目录(短参数-d，长参数--dir)")
+	flag.StringVar(&dir_csv, "dir", dir_csv, "指定 csv 目录(短参数-d，长参数--dir)") // 复用默认值
+
+	flag.StringVar(&file_csv, "f", "", "指定 csv 文件(短参数-f，长参数--file)")
+	flag.StringVar(&file_csv, "file", file_csv, "指定 csv 文件(短参数-f，长参数--file)")
+
+	interac_confirm := flag.Bool("y", false, "是否 取消 交互式确认执行 (短参数-y 代表 是)")
+	log_confirm := flag.Bool("l", false, "是否将 日志标准输出到终端 (短参数-l 代表 是)")
+
+	// 解析参数
+	flag.Parse()
+
 	var pf PathFile
-	b := make([]byte, 1)
+	var csvdir string
+	var csvfiles []string
+	exeflg := false
 
 	curPath := GetCurPath()
-
 	pf.shellScript = curPath + "/config/command.sh"
 	pf.remoteSaveShellScriptPath = "/tmp"
 
-	// 执行前目录检查
-	if pe, _ := PathExists(curPath + "/config"); !pe {
-		log.Fatal(curPath + "/config  目录不存在， 请创建")
+	//b := make([]byte, 1)
+
+	if dir_csv != "" {
+		csvdir = dir_csv
+		csvfiles = DelCsvDir(dir_csv)
+	} else if file_csv != "" {
+		csvfiles = append(csvfiles, file_csv)
+	} else {
+		csvdir = curPath + "/config/"
+		csvfiles = DelCsvDir(csvdir)
 	}
 
-	// 执行前目录文件检查
-	if judge, _ := PathExists(pf.shellScript); !judge {
-		log.Fatalf("Eorror : 请检查当前目录下 %s 文件是否存在 ... ...", pf.shellScript)
-		os.Exit(100)
-	}
+	exe_csv_file_count := 0
 
-	// 检索 config 目录下 csv 远端机器信息
-	dir_filelist, drierr := ioutil.ReadDir(curPath + "/config/")
-	if drierr != nil {
-		log.Fatalln(drierr.Error())
-	}
+	Pre_execution_inspection(curPath, pf, csvfiles)
 
-	for _, dirfile := range dir_filelist {
-		if judge, _ := regexp.MatchString(".csv$", dirfile.Name()); judge {
-			file_ext := path.Ext(dirfile.Name())
-			file_name := strings.Split(dirfile.Name(), file_ext)[0]
-			logs_path := curPath + "/logs/" + file_name
-			if EndJudge(curPath + "/config/" + dirfile.Name()) {
-				file, err := os.Open(curPath + "/config/" + dirfile.Name())
-				if err != nil {
-					log.Fatalln(err)
-				}
-				defer file.Close()
+	for _, csvfile := range csvfiles {
+		LogStdout("starting " + csvfile + "... ... ...")
+		filename_with_ext := filepath.Base(csvfile)
+		file_ext := path.Ext(filename_with_ext)
+		file_name := strings.Split(filename_with_ext, file_ext)[0]
+		logs_path := curPath + "/logs/" + file_name
 
-				reader := csv.NewReader(file)
-				if reader == nil {
-					log.Fatalln("NewReader return nil, file:", file)
-				}
-
-				records, err := reader.ReadAll()
-				if err != nil {
-					log.Fatalln(err)
-				}
-
-				// 等待所有goroutine结束后才退出main
-				gw := sync.WaitGroup{}
-				// 批量在远端机器上执行command.sh脚本。
-				//BatchExec(records, pf, curPath, gw)
-				for i, v := range records {
-					if i != 0 {
-						host := HostSliceToStruct(v)
-						if pe, _ := PathExists(logs_path); !pe {
-							os.MkdirAll(logs_path, 0755)
-						} //  logs 目录是否存在，不存在则创建
-						pf.logfile = logs_path + "/" + host.ip + ".log"
-						gw.Add(1)
-						go ShellScriptRemoteExec(host, pf, &gw)
-					}
-				}
-				gw.Wait() // 阻塞，直到WaitGroup中的计数器为0
-				fmt.Printf("Press any key to exit...")
-				os.Stdin.Read(b)
-			}
-		} else {
-			log.Fatalf("Eorror : 请检查config目录下 csv 文件是否存在 ... ...")
-			os.Exit(100)
+		if *interac_confirm {
+			exeflg = true
+		} else if EndJudge(csvfile) {
+			exeflg = true
 		}
+
+		if exeflg {
+			ExecWithCSV(csvfile, logs_path, pf, *log_confirm)
+			exe_csv_file_count++
+		}
+	}
+
+	if exe_csv_file_count == 0 {
+		LogStdout("Error : 请检查 " + csvdir + " 目录下 csv 文件是否存在 ... ...")
+		os.Exit(100)
 	}
 
 }
 
+// 处理csvdir
+func DelCsvDir(csvdir string) []string {
+	dir_filelist, drierr := ioutil.ReadDir(csvdir)
+	var csvfiles []string
+	if drierr != nil {
+		LogStdout(drierr.Error())
+	}
+
+	for _, dirfile := range dir_filelist {
+		if judge, _ := regexp.MatchString(".csv$", dirfile.Name()); judge {
+			csvfiles = append(csvfiles, csvdir+dirfile.Name())
+		}
+	}
+
+	return csvfiles
+}
+
+// 按csv内容执行
+func ExecWithCSV(csvfile string, logs_path string, pf PathFile, log_confirm bool) {
+
+	b := make([]byte, 1)
+
+	file, err := os.Open(csvfile)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	if reader == nil {
+		log.Fatalln("NewReader return nil, file:", file)
+	}
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// 等待所有goroutine结束后才退出main
+	gw := sync.WaitGroup{}
+	// 批量在远端机器上执行command.sh脚本。
+	//BatchExec(records, pf, curPath, gw)
+	for i, v := range records {
+		if i != 0 {
+			host := HostSliceToStruct(v)
+			if pe, _ := PathExists(logs_path); !pe {
+				os.MkdirAll(logs_path, 0755)
+			} //  logs 目录是否存在，不存在则创建
+			pf.logfile = logs_path + "/" + host.ip + ".log"
+			gw.Add(1)
+			go ShellScriptRemoteExec(host, pf, &gw, csvfile, log_confirm)
+		}
+	}
+	gw.Wait() // 阻塞，直到WaitGroup中的计数器为0
+	fmt.Printf("Press any key to exit...")
+	os.Stdin.Read(b)
+}
+
+// 执行前检查
+func Pre_execution_inspection(curPath string, pf PathFile, csvfiles []string) {
+
+	// 执行前目录检查
+	if pe, _ := PathExists(curPath + "/config"); !pe {
+		LogStdout(curPath + "/config  目录不存在， 请创建")
+	}
+
+	// 检查 shell 命令脚本文件, 默认 command.sh
+	if judge, _ := PathExists(pf.shellScript); !judge {
+		LogStdout("Error : 请检查当前目录下 " + pf.shellScript + " 文件是否存在 ... ...")
+		os.Exit(100)
+	}
+
+	// 检查 -f xxx.csv 文件是否存在
+	for _, csvfile := range csvfiles {
+		if judge, _ := PathExists(csvfile); !judge {
+			LogStdout("Error : 请检查当前目录下 " + csvfile + " 文件是否存在 ... ...")
+			os.Exit(100)
+		}
+	}
+}
+
+// 日志标准输出格式
+func LogStdout(message string) {
+	// 获取当前时间并格式化为 %Y%m%d %H:%M:%S
+	// 注意：月份是小写m，日期是小写d（大写M是分钟）
+	timestamp := time.Now().Format("2006/01/02 15:04:05")
+
+	// 输出带时间戳的日志
+	fmt.Printf("\n[%s] %s\n", timestamp, message)
+}
+
+// 交互式
 func EndJudge(stage string) bool {
 	var continuerFlag string
 	for {
@@ -142,7 +229,7 @@ func EndJudge(stage string) bool {
 	}
 }
 
-func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup) {
+func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup, csvfile string, log_confirm bool) {
 	env_slice := strings.Split(host.env, ",")
 	timer := strconv.FormatInt(time.Now().Unix(), 10)
 	tmpscript := pf.remoteSaveShellScriptPath + "/" + timer
@@ -164,15 +251,15 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup) {
 
 	sshClt, err := ssh.Dial("tcp", host.ip+":"+host.port, cfg)
 	if err != nil {
-		logger.Println("SSH 连接 error: ", err.Error())
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		LogStdout("SSH 连接 error: " + err.Error())
 		return
 	}
 
 	client, err := scp.NewClientBySSH(sshClt)
 	if err != nil {
-		logger.Println("Error creating new SSH session from existing connection", err)
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		LogStdout("Error creating new SSH session from existing connection " + err.Error())
 		return
 	}
 	defer client.Close()
@@ -184,16 +271,16 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup) {
 	ctx := context.Background()
 	err = client.CopyFile(ctx, r, tmpscript, "0777")
 	if err != nil {
-		logger.Println("Error : 拷贝脚本失败 ... ...  ", err)
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		LogStdout("Error : 拷贝脚本失败 ... ...  " + err.Error())
 		return
 	}
 
 	// 建立新会话
 	session, err := sshClt.NewSession()
 	if err != nil {
-		logger.Println("new session error: %s", err.Error())
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		LogStdout("new session error: " + err.Error())
 		return
 	}
 	defer session.Close()
@@ -205,8 +292,8 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup) {
 	}
 
 	if err = session.RequestPty("xterm", 80, 40, modes); err != nil {
-		logger.Println("Error : " + err.Error()) // session output
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		LogStdout("Error : " + err.Error()) // session output
 		return
 	}
 
@@ -220,21 +307,30 @@ func ShellScriptRemoteExec(host Host, pf PathFile, group *sync.WaitGroup) {
 	session.Stdout = &stdoutBuf
 	err = session.Run(export_env + tmpscript + ";rm -fr " + tmpscript)
 
-	LogAct(err, stdoutBuf.String(), logger, host)
+	LogAct(err, stdoutBuf.String(), logger, host, csvfile, log_confirm)
 
 }
 
-func LogAct(err error, info interface{}, logger *log.Logger, host Host) {
+func LogAct(err error, info interface{}, logger *log.Logger, host Host, csvfile string, log_confirm bool) {
 	if err == nil {
-		logger.Printf("session output :\n%s", info) // session output
-		fmt.Printf("%s              done\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              done")
+		if log_confirm {
+			fmt.Printf("session output :\n%s", info)
+		} else {
+			logger.Printf("session output :\n%s", info) // session output
+		}
 	} else {
-		logger.Printf("\n%s", info) // session output
-		logger.Println(err.Error())
-		logger.Println("执行脚本失败 ... ... ...")
-		fmt.Printf("%s              fail\n", host.ip)
+		LogStdout(csvfile + "    " + host.ip + "              fail")
+		if log_confirm {
+			fmt.Printf("\n%s", info) // session output
+			fmt.Println(err.Error())
+			fmt.Println("执行脚本失败 ... ... ...")
+		} else {
+			logger.Printf("\n%s", info) // session output
+			logger.Println(err.Error())
+			logger.Println("执行脚本失败 ... ... ...")
+		}
 	}
-
 }
 
 func HostSliceToStruct(sli []string) Host {
